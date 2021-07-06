@@ -1,6 +1,6 @@
 #! -*- coding:utf-8 -*-
 # 通过R-Drop增强模型的泛化性能
-# 数据集：IFLYTEK' 长文本分类 (https://github.com/CLUEbenchmark/CLUE)
+# 数据集：TNEWS 短文本分类 (https://github.com/CLUEbenchmark/CLUE)
 # 博客：https://kexue.fm/archives/8496
 
 import json
@@ -13,61 +13,67 @@ from bert4keras.snippets import sequence_padding, DataGenerator
 from keras.layers import Lambda, Dense
 from keras.losses import kullback_leibler_divergence as kld
 from tqdm import tqdm
-
-num_classes = 119
+from modules import truncate
 maxlen = 128
 batch_size = 32
 
 # BERT base
-config_path = '/search/odin/guobk/data/model/chinese_L-12_H-768_A-12/bert_config.json'
-checkpoint_path = '/search/odin/guobk/data/model/chinese_L-12_H-768_A-12/bert_model.ckpt'
-dict_path = '/search/odin/guobk/data/model/chinese_L-12_H-768_A-12/vocab.txt'
+config_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/bert_config.json'
+checkpoint_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/bert_model.ckpt'
+dict_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/vocab.txt'
 
+path_train = '/search/odin/guobk/data/simcse/20210621/train_d_drop.txt'
+path_dev = '/search/odin/guobk/data/simcse/20210621/dev_d_drop.txt'
 
 def load_data(filename):
-    """加载数据
-    单条格式：(文本, 标签id)
-    """
     D = []
     with open(filename) as f:
         for i, l in enumerate(f):
             l = json.loads(l)
-            text, label = l['sentence'], l['label']
-            D.append((text, int(label)))
+            #text, syns = l['text'], l['synonyms']
+            D.append(d)
     return D
 
 
 # 加载数据集
-train_data = load_data(
-    '/search/odin/guobk/data/CLUE/iflytek/train.json'
-)
-valid_data = load_data(
-    '/search/odin/guobk/data/CLUE/iflytek/dev.json'
-)
+train_data = load_data(path_train)
+valid_data = load_data(path_dev)
 
 # 建立分词器
 tokenizer = Tokenizer(dict_path, do_lower_case=True)
 
-
 class data_generator(DataGenerator):
     """数据生成器
     """
+    def __init__(self, *args, **kwargs):
+        super(data_generator, self).__init__(*args, **kwargs)
+        self.some_samples = []
     def __iter__(self, random=False):
-        batch_token_ids, batch_segment_ids, batch_labels = [], [], []
-        for is_end, (text, label) in self.sample(random):
-            token_ids, segment_ids = tokenizer.encode(text, maxlen=maxlen)
-            for i in range(2):
-                batch_token_ids.append(token_ids)
-                batch_segment_ids.append(segment_ids)
-                batch_labels.append([label])
-            if len(batch_token_ids) == self.batch_size * 2 or is_end:
+        batch_token_ids, batch_segment_ids = [], []
+        for is_end, d in self.sample(random):
+            text, synonyms = d['text'], d['synonyms']
+            synonyms = [text] + synonyms
+            np.random.shuffle(synonyms)
+            text, synonym = synonyms[:2]
+            text, synonym = truncate(text), truncate(synonym)
+            self.some_samples.append(text)
+            if len(self.some_samples) > 1000:
+                self.some_samples.pop(0)
+            token_ids, segment_ids = tokenizer.encode(
+                text, synonym, maxlen=maxlen * 2
+            )
+            batch_token_ids.append(token_ids)
+            batch_segment_ids.append(segment_ids)
+            token_ids, segment_ids = tokenizer.encode(
+                synonym, text, maxlen=maxlen * 2
+            )
+            batch_token_ids.append(token_ids)
+            batch_segment_ids.append(segment_ids)
+            if len(batch_token_ids) == self.batch_size or is_end:
                 batch_token_ids = sequence_padding(batch_token_ids)
                 batch_segment_ids = sequence_padding(batch_segment_ids)
-                batch_labels = sequence_padding(batch_labels)
-                yield [batch_token_ids, batch_segment_ids], batch_labels
-                batch_token_ids, batch_segment_ids, batch_labels = [], [], []
-
-
+                yield [batch_token_ids, batch_segment_ids], None
+                batch_token_ids, batch_segment_ids = [], []
 # 转换数据集
 train_generator = data_generator(train_data, batch_size)
 valid_generator = data_generator(valid_data, batch_size)
@@ -94,9 +100,20 @@ model.summary()
 def crossentropy_with_rdrop(y_true, y_pred, alpha=4):
     """配合R-Drop的交叉熵损失
     """
-    y_true = K.reshape(y_true, K.shape(y_pred)[:-1])
-    y_true = K.cast(y_true, 'int32')
-    loss1 = K.mean(K.sparse_categorical_crossentropy(y_true, y_pred))
+    # 相似性loss
+    idxs = K.arange(0, K.shape(y_pred)[0])
+    idxs_1 = idxs[None, :]
+    idxs_2 = (idxs + 1 - idxs % 2 * 2)[:, None]
+    labels = K.equal(idxs_1, idxs_2)
+    y_true = K.cast(labels, K.floatx())
+    y_pred = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
+    similarities = K.dot(y_pred, K.transpose(y_pred))  # 相似度矩阵
+    similarities = similarities - K.eye(K.shape(y_pred)[0]) * 1e12  # 排除对角线
+    similarities = similarities * 30  # scale
+    loss1 = K.categorical_crossentropy(
+        y_true, similarities, from_logits=True
+    )
+    # K-L loss
     loss2 = kld(y_pred[::2], y_pred[1::2]) + kld(y_pred[1::2], y_pred[::2])
     return loss1 + K.mean(loss2) / 4 * alpha
 
@@ -146,7 +163,7 @@ def predict_to_file(in_file, out_file):
             text = l['sentence']
             token_ids, segment_ids = tokenizer.encode(text, maxlen=maxlen)
             label = model.predict([[token_ids], [segment_ids]])[0].argmax()
-            l = json.dumps({'id': str(l['id']), 'label': str(label)})
+            l = json.dumps({'id': str(l['id']), 'label': labels[label]})
             fw.write(l + '\n')
     fw.close()
 
@@ -165,4 +182,4 @@ if __name__ == '__main__':
 else:
 
     model.load_weights('best_model.weights')
-    # predict_to_file('/root/CLUE-master/baselines/CLUEdataset/iflytek/test.json', 'iflytek_predict.json')
+    # predict_to_file('/root/CLUE-master/baselines/CLUEdataset/tnews/test.json', 'tnews_predict.json')
