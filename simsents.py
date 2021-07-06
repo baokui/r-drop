@@ -32,7 +32,7 @@ def load_data(filename):
         for i, l in enumerate(f):
             l = json.loads(l)
             #text, syns = l['text'], l['synonyms']
-            D.append(d)
+            D.append(l)
     return D
 
 
