@@ -14,6 +14,7 @@ from keras.layers import Lambda, Dense
 from keras.losses import kullback_leibler_divergence as kld
 from tqdm import tqdm
 from modules import truncate
+import os
 maxlen = 128
 batch_size = 32
 dim = 312
