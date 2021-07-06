@@ -24,6 +24,7 @@ dict_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/vocab.
 
 path_train = '/search/odin/guobk/data/simcse/20210621/train_d_drop.txt'
 path_dev = '/search/odin/guobk/data/simcse/20210621/dev_d_drop.txt'
+path_model = '/search/odin/guobk/data/my_rdrop_bert4'
 
 def load_data(filename):
     D = []
@@ -171,12 +172,13 @@ def predict_to_file(in_file, out_file):
 if __name__ == '__main__':
 
     evaluator = Evaluator()
-
+    checkpointer = keras.callbacks.ModelCheckpoint(os.path.join(path_model, 'model_{epoch:03d}.h5'),
+                                   verbose=1, save_weights_only=True, period=1)
     model.fit(
         train_generator.forfit(),
         steps_per_epoch=len(train_generator),
         epochs=50,
-        callbacks=[evaluator]
+        callbacks=[checkpointer]
     )
 
 else:
