@@ -18,6 +18,7 @@ import os
 maxlen = 128
 batch_size = 32
 dim = 312
+alpha = 4
 
 # BERT base
 config_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/bert_config.json'
@@ -52,7 +53,7 @@ class data_generator(DataGenerator):
         super(data_generator, self).__init__(*args, **kwargs)
         self.some_samples = []
     def __iter__(self, random=False):
-        batch_token_ids, batch_segment_ids = [], []
+        batch_token_ids, batch_segment_ids, batch_labels = [], [], []
         for is_end, d in self.sample(random):
             text, synonyms = d['text'], d['synonyms']
             synonyms = [text] + synonyms
@@ -67,16 +68,18 @@ class data_generator(DataGenerator):
             )
             batch_token_ids.append(token_ids)
             batch_segment_ids.append(segment_ids)
+            batch_labels.append(0)
             token_ids, segment_ids = tokenizer.encode(
                 synonym, text, maxlen=maxlen * 2
             )
             batch_token_ids.append(token_ids)
             batch_segment_ids.append(segment_ids)
+            batch_labels.append(0)
             if len(batch_token_ids) == self.batch_size or is_end:
                 batch_token_ids = sequence_padding(batch_token_ids)
                 batch_segment_ids = sequence_padding(batch_segment_ids)
-                yield [batch_token_ids, batch_segment_ids], None
-                batch_token_ids, batch_segment_ids = [], []
+                yield [batch_token_ids, batch_segment_ids], batch_labels
+                batch_token_ids, batch_segment_ids, batch_labels = [], [], []
 # 转换数据集
 train_generator = data_generator(train_data, batch_size)
 valid_generator = data_generator(valid_data, batch_size)
@@ -90,17 +93,36 @@ bert = build_transformer_model(
 )
 
 output = Lambda(lambda x: x[:, 0])(bert.model.output)
-output = Dense(
-    units=dim,
-    activation='tanh',
-    kernel_initializer=bert.initializer
-)(output)
-
+# output = Dense(
+#     units=dim,
+#     activation='tanh',
+#     kernel_initializer=bert.initializer
+# )(output)
+# output = keras.layers.Dense(dim,activation='tanh')(output)
 model = keras.models.Model(bert.model.input, output)
 model.summary()
 
-
-def crossentropy_with_rdrop(y_true, y_pred, alpha=4):
+def simcse_loss(y_true, y_pred):
+    """用于SimCSE训练的loss
+    """
+    # 构造标签
+    idxs = K.arange(0, K.shape(y_pred)[0]/2)
+    idxs_1 = idxs[None, :]
+    idxs_2 = idxs[:, None]
+    y_true = K.equal(idxs_1, idxs_2)
+    y_true = K.cast(y_true, K.floatx())
+    # 计算相似度
+    outputA = Lambda(lambda x: x[:,:dim])(y_pred)
+    outputB = Lambda(lambda x: x[:,dim:])(y_pred)
+    outputA = outputA[::2] #取偶数行，即取A句的featureA
+    outputB = outputB[1::2] #取奇数行，即取B句的featureB
+    outputA = K.l2_normalize(outputA, axis=1)
+    outputB = K.l2_normalize(outputB, axis=1)
+    similarities = K.dot(outputA, K.transpose(outputB))
+    similarities = similarities * 2
+    loss = K.categorical_crossentropy(y_true, similarities, from_logits=True)
+    return K.mean(loss)
+def crossentropy_with_rdrop(y_true, y_pred):
     """配合R-Drop的交叉熵损失
     """
     # 相似性loss
@@ -123,8 +145,7 @@ def crossentropy_with_rdrop(y_true, y_pred, alpha=4):
 
 model.compile(
     loss=crossentropy_with_rdrop,
-    optimizer=Adam(2e-5),
-    metrics=['sparse_categorical_accuracy'],
+    optimizer=Adam(2e-5)
 )
 
 
