@@ -16,6 +16,7 @@ from tqdm import tqdm
 from modules import truncate
 maxlen = 128
 batch_size = 32
+dim = 312
 
 # BERT base
 config_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/bert_config.json'
@@ -89,8 +90,8 @@ bert = build_transformer_model(
 
 output = Lambda(lambda x: x[:, 0])(bert.model.output)
 output = Dense(
-    units=num_classes,
-    activation='softmax',
+    units=dim,
+    activation='tanh',
     kernel_initializer=bert.initializer
 )(output)
 
