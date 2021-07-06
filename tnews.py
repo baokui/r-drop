@@ -23,9 +23,9 @@ maxlen = 128
 batch_size = 32
 
 # BERT base
-config_path = '/root/kg/bert/chinese_L-12_H-768_A-12/bert_config.json'
-checkpoint_path = '/root/kg/bert/chinese_L-12_H-768_A-12/bert_model.ckpt'
-dict_path = '/root/kg/bert/chinese_L-12_H-768_A-12/vocab.txt'
+config_path = '/search/odin/guobk/data/model/chinese_L-12_H-768_A-12/bert_config.json'
+checkpoint_path = '/search/odin/guobk/data/model/chinese_L-12_H-768_A-12/bert_model.ckpt'
+dict_path = '/search/odin/guobk/data/model/chinese_L-12_H-768_A-12/vocab.txt'
 
 
 def load_data(filename):
@@ -40,10 +40,10 @@ def load_data(filename):
 
 # 加载数据集
 train_data = load_data(
-    '/root/CLUE-master/baselines/CLUEdataset/tnews/train.json'
+    '/search/odin/guobk/data/CLUE/tnews/train.json'
 )
 valid_data = load_data(
-    '/root/CLUE-master/baselines/CLUEdataset/tnews/dev.json'
+    '/search/odin/guobk/data/CLUE/tnews/dev.json'
 )
 
 # 建立分词器
