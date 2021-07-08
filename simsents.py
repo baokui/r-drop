@@ -63,19 +63,20 @@ class data_generator(DataGenerator):
             self.some_samples.append(text)
             if len(self.some_samples) > 1000:
                 self.some_samples.pop(0)
-            token_ids, segment_ids = tokenizer.encode(
-                text, synonym, maxlen=maxlen * 2
-            )
-            batch_token_ids.append(token_ids)
-            batch_segment_ids.append(segment_ids)
-            batch_labels.append(0)
-            token_ids, segment_ids = tokenizer.encode(
-                synonym, text, maxlen=maxlen * 2
-            )
-            batch_token_ids.append(token_ids)
-            batch_segment_ids.append(segment_ids)
-            batch_labels.append(0)
-            if len(batch_token_ids) == self.batch_size or is_end:
+            for ii in range(2):
+                token_ids, segment_ids = tokenizer.encode(
+                    text, synonym, maxlen=maxlen * 2
+                )
+                batch_token_ids.append(token_ids)
+                batch_segment_ids.append(segment_ids)
+                batch_labels.append(0)
+                token_ids, segment_ids = tokenizer.encode(
+                    synonym, text, maxlen=maxlen * 2
+                )
+                batch_token_ids.append(token_ids)
+                batch_segment_ids.append(segment_ids)
+                batch_labels.append(0)
+            if len(batch_token_ids) == self.batch_size*2 or is_end:
                 batch_token_ids = sequence_padding(batch_token_ids)
                 batch_segment_ids = sequence_padding(batch_segment_ids)
                 yield [batch_token_ids, batch_segment_ids], batch_labels
@@ -98,7 +99,7 @@ output = Lambda(lambda x: x[:, 0])(bert.model.output)
 #     activation='tanh',
 #     kernel_initializer=bert.initializer
 # )(output)
-# output = keras.layers.Dense(dim,activation='tanh')(output)
+output = keras.layers.Dense(dim,activation='tanh')(output)
 model = keras.models.Model(bert.model.input, output)
 model.summary()
 
@@ -131,15 +132,18 @@ def crossentropy_with_rdrop(y_true, y_pred):
     idxs_2 = (idxs + 1 - idxs % 2 * 2)[:, None]
     labels = K.equal(idxs_1, idxs_2)
     y_true = K.cast(labels, K.floatx())
-    y_pred = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
-    similarities = K.dot(y_pred, K.transpose(y_pred))  # 相似度矩阵
-    similarities = similarities - K.eye(K.shape(y_pred)[0]) * 1e12  # 排除对角线
+    y_pred1 = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
+    similarities = K.dot(y_pred1, K.transpose(y_pred1))  # 相似度矩阵
+    similarities = similarities - K.eye(K.shape(y_pred1)[0]) * 1e12  # 排除对角线
     similarities = similarities * 30  # scale
     loss1 = K.categorical_crossentropy(
         y_true, similarities, from_logits=True
     )
     # K-L loss
-    loss2 = kld(y_pred[::2], y_pred[1::2]) + kld(y_pred[1::2], y_pred[::2])
+    # loss2 = kld(y_pred1[::2], y_pred1[1::2]) + kld(y_pred1[1::2], y_pred1[::2])
+    loss2_0 = kld(y_pred1[::4], y_pred1[2::4]) + kld(y_pred1[2::4], y_pred1[::4])
+    loss2_1 = kld(y_pred1[1::4], y_pred1[3::4]) + kld(y_pred1[3::4], y_pred1[1::4])
+    loss2 = loss2_0 + loss2_1
     return loss1 + K.mean(loss2) / 4 * alpha
 
 
