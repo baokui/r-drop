@@ -18,7 +18,7 @@ import os
 maxlen = 128
 batch_size = 32
 dim = 312
-alpha = 4
+alpha = 0
 
 # BERT base
 config_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/bert_config.json'
@@ -176,7 +176,7 @@ def crossentropy_with_rdrop(y_true, y_pred):
     loss = loss1 + (loss2_1+loss2_2)/4*alpha
     return loss
 
-loss = crossentropy_with_rdrop(None, model.output)
+# loss = crossentropy_with_rdrop(None, model.output)
 model.compile(
     loss=crossentropy_with_rdrop,
     optimizer=Adam(2e-5)
