@@ -63,7 +63,7 @@ class data_generator(DataGenerator):
             self.some_samples.append(text)
             if len(self.some_samples) > 1000:
                 self.some_samples.pop(0)
-            for ii in range(2):
+            for ii in range(1):
                 token_ids, segment_ids = tokenizer.encode(
                     text, synonym, maxlen=maxlen * 2
                 )
@@ -76,9 +76,12 @@ class data_generator(DataGenerator):
                 batch_token_ids.append(token_ids)
                 batch_segment_ids.append(segment_ids)
                 batch_labels.append(0)
-            if len(batch_token_ids) == self.batch_size*2 or is_end:
+            if len(batch_token_ids) == self.batch_size or is_end:
                 batch_token_ids = sequence_padding(batch_token_ids)
                 batch_segment_ids = sequence_padding(batch_segment_ids)
+                batch_token_ids = batch_token_ids + batch_token_ids 
+                batch_segment_ids = batch_segment_ids + batch_segment_ids
+                batch_labels = batch_labels + batch_labels
                 yield [batch_token_ids, batch_segment_ids], batch_labels
                 batch_token_ids, batch_segment_ids, batch_labels = [], [], []
 # 转换数据集
@@ -152,18 +155,16 @@ def crossentropy_with_rdrop(y_true, y_pred):
     # loss2 = loss2_0 + loss2_1
     # loss = loss1/2 + loss2*0.3
     # 对比loss
-    y0_1 = y_pred[0::4] # 第1次encoding对query的emb
-    y1_1 = y_pred[1::4] # 第1次encoding对doc的emb
-    y0_2 = y_pred[2::4] # 第2次encoding对query的emb
-    y1_2 = y_pred[3::4] # 第2次encoding对doc的emb
+    y1 = y_pred1[:batch_size] # 第1次model predict后的emb
+    y2 = y_pred1[batch_size:] # 第1次model predict后的emb
     # 计算第1次emb的相似性矩阵
-    similarities1 = K.dot(y0_1, K.transpose(y1_1))  # 相似度矩阵
-    similarities1 = similarities1 - K.eye(K.shape(y0_1)[0]) * 1e12  # 排除对角线
+    similarities1 = K.dot(y1, K.transpose(y1))  # 相似度矩阵
+    similarities1 = similarities1 - K.eye(K.shape(y1)[0]) * 1e12  # 排除对角线
     similarities1 = similarities1 * 30  # scale
     p_similarities1 = K.softmax(similarities1)
     # 计算第2次emb的相似性矩阵
-    similarities2 = K.dot(y0_2, K.transpose(y1_2))  # 相似度矩阵
-    similarities2 = similarities2 - K.eye(K.shape(y0_2)[0]) * 1e12  # 排除对角线
+    similarities2 = K.dot(y2, K.transpose(y2))  # 相似度矩阵
+    similarities2 = similarities2 - K.eye(K.shape(y2)[0]) * 1e12  # 排除对角线
     similarities2 = similarities2 * 30  # scale
     p_similarities2 = K.softmax(similarities2)
     loss2_1 = K.mean(K.categorical_crossentropy(
