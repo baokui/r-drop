@@ -137,9 +137,9 @@ def crossentropy_with_rdrop(y_true, y_pred):
     similarities = K.dot(y_pred1, K.transpose(y_pred1))  # 相似度矩阵
     similarities = similarities - K.eye(K.shape(y_pred1)[0]) * 1e12  # 排除对角线
     similarities = similarities * 30  # scale
-    loss1 = K.categorical_crossentropy(
+    loss1 = K.mean(K.categorical_crossentropy(
         y_true, similarities, from_logits=True
-    )
+    ))
     # K-L loss
     # loss2 = kld(y_pred1[::2], y_pred1[1::2]) + kld(y_pred1[1::2], y_pred1[::2])
     # loss2_0 = kld(y_pred1[::4], y_pred1[2::4]) + kld(y_pred1[2::4], y_pred1[::4])
@@ -164,12 +164,12 @@ def crossentropy_with_rdrop(y_true, y_pred):
     similarities2 = K.dot(y0_2, K.transpose(y1_2))  # 相似度矩阵
     similarities2 = similarities2 - K.eye(K.shape(y0_2)[0]) * 1e12  # 排除对角线
     similarities2 = similarities2 * 30  # scale
-    loss2_1 = K.categorical_crossentropy(
+    loss2_1 = K.mean(K.categorical_crossentropy(
         similarities1, similarities2, from_logits=True
-    )
-    loss2_2 = K.categorical_crossentropy(
+    ))
+    loss2_2 = K.mean(K.categorical_crossentropy(
         similarities2, similarities1, from_logits=True
-    )
+    ))
     loss = loss1 + (loss2_1+loss2_2)/4*alpha
     return loss
 
