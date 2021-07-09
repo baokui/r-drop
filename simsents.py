@@ -141,12 +141,17 @@ def crossentropy_with_rdrop(y_true, y_pred):
     )
     # K-L loss
     # loss2 = kld(y_pred1[::2], y_pred1[1::2]) + kld(y_pred1[1::2], y_pred1[::2])
-    loss2_0 = kld(y_pred1[::4], y_pred1[2::4]) + kld(y_pred1[2::4], y_pred1[::4])
-    loss2_1 = kld(y_pred1[1::4], y_pred1[3::4]) + kld(y_pred1[3::4], y_pred1[1::4])
+    # loss2_0 = kld(y_pred1[::4], y_pred1[2::4]) + kld(y_pred1[2::4], y_pred1[::4])
+    # loss2_1 = kld(y_pred1[1::4], y_pred1[3::4]) + kld(y_pred1[3::4], y_pred1[1::4])
+    # loss2 = loss2_0 + loss2_1
+    # return loss1 + K.mean(loss2) / 4 * alpha
+    loss2_0 = K.mean(K.square(y_pred1[::4]-y_pred1[2::4]))
+    loss2_1 = K.mean(K.square(y_pred1[1::4]-y_pred1[3::4]))
     loss2 = loss2_0 + loss2_1
-    return loss1 + K.mean(loss2) / 4 * alpha
+    loss = loss1/2 + loss2*0.3
+    return loss
 
-
+loss = crossentropy_with_rdrop(None, model.output)
 model.compile(
     loss=crossentropy_with_rdrop,
     optimizer=Adam(2e-5)
