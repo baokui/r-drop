@@ -125,6 +125,7 @@ def simcse_loss(y_true, y_pred):
     return K.mean(loss)
 def crossentropy_with_rdrop(y_true, y_pred):
     """配合R-Drop的交叉熵损失
+    https://spaces.ac.cn/archives/8496
     """
     # 相似性loss
     idxs = K.arange(0, K.shape(y_pred)[0])
@@ -144,11 +145,32 @@ def crossentropy_with_rdrop(y_true, y_pred):
     # loss2_0 = kld(y_pred1[::4], y_pred1[2::4]) + kld(y_pred1[2::4], y_pred1[::4])
     # loss2_1 = kld(y_pred1[1::4], y_pred1[3::4]) + kld(y_pred1[3::4], y_pred1[1::4])
     # loss2 = loss2_0 + loss2_1
-    # return loss1 + K.mean(loss2) / 4 * alpha
-    loss2_0 = K.mean(K.square(y_pred1[::4]-y_pred1[2::4]))
-    loss2_1 = K.mean(K.square(y_pred1[1::4]-y_pred1[3::4]))
-    loss2 = loss2_0 + loss2_1
-    loss = loss1/2 + loss2*0.3
+    # loss = loss1 + K.mean(loss2) / 4 * alpha
+    # MSE
+    # loss2_0 = K.mean(K.square(y_pred1[::4]-y_pred1[2::4]))
+    # loss2_1 = K.mean(K.square(y_pred1[1::4]-y_pred1[3::4]))
+    # loss2 = loss2_0 + loss2_1
+    # loss = loss1/2 + loss2*0.3
+    # 对比loss
+    y0_1 = y_pred[0::4] # 第1次encoding对query的emb
+    y1_1 = y_pred[1::4] # 第1次encoding对doc的emb
+    y0_2 = y_pred[2::4] # 第2次encoding对query的emb
+    y1_2 = y_pred[3::4] # 第2次encoding对doc的emb
+    # 计算第1次emb的相似性矩阵
+    similarities1 = K.dot(y0_1, K.transpose(y1_1))  # 相似度矩阵
+    similarities1 = similarities1 - K.eye(K.shape(y0_1)[0]) * 1e12  # 排除对角线
+    similarities1 = similarities1 * 30  # scale
+    # 计算第2次emb的相似性矩阵
+    similarities2 = K.dot(y0_2, K.transpose(y1_2))  # 相似度矩阵
+    similarities2 = similarities2 - K.eye(K.shape(y0_2)[0]) * 1e12  # 排除对角线
+    similarities2 = similarities2 * 30  # scale
+    loss2_1 = K.categorical_crossentropy(
+        similarities1, similarities2, from_logits=True
+    )
+    loss2_2 = K.categorical_crossentropy(
+        similarities2, similarities1, from_logits=True
+    )
+    loss = loss1 + (loss2_1+loss2_2)/4*alpha
     return loss
 
 loss = crossentropy_with_rdrop(None, model.output)
