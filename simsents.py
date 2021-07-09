@@ -77,11 +77,11 @@ class data_generator(DataGenerator):
                 batch_segment_ids.append(segment_ids)
                 batch_labels.append(0)
             if len(batch_token_ids) == self.batch_size or is_end:
-                batch_token_ids = sequence_padding(batch_token_ids)
-                batch_segment_ids = sequence_padding(batch_segment_ids)
                 batch_token_ids = batch_token_ids + batch_token_ids 
                 batch_segment_ids = batch_segment_ids + batch_segment_ids
                 batch_labels = batch_labels + batch_labels
+                batch_token_ids = sequence_padding(batch_token_ids)
+                batch_segment_ids = sequence_padding(batch_segment_ids)
                 yield [batch_token_ids, batch_segment_ids], batch_labels
                 batch_token_ids, batch_segment_ids, batch_labels = [], [], []
 # 转换数据集
