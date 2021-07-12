@@ -13,6 +13,7 @@ from bert4keras.snippets import sequence_padding, DataGenerator
 from keras.layers import Lambda, Dense
 from keras.losses import kullback_leibler_divergence as kld
 from tqdm import tqdm
+import os
 
 labels = [
     "100", "101", "102", "103", "104", "106", "107", "108", "109", "110", "112",
@@ -27,6 +28,7 @@ config_path = '/search/odin/guobk/data/model/chinese_L-12_H-768_A-12/bert_config
 checkpoint_path = '/search/odin/guobk/data/model/chinese_L-12_H-768_A-12/bert_model.ckpt'
 dict_path = '/search/odin/guobk/data/model/chinese_L-12_H-768_A-12/vocab.txt'
 
+path_model = '/search/odin/guobk/data/tnews'
 
 def load_data(filename):
     D = []
@@ -129,7 +131,7 @@ class Evaluator(keras.callbacks.Callback):
         val_acc = evaluate(valid_generator)
         if val_acc > self.best_val_acc:
             self.best_val_acc = val_acc
-            model.save_weights('best_model.weights')
+            model.save_weights(os.path.join(path_model,'best_model.weights'))
         print(
             u'val_acc: %.5f, best_val_acc: %.5f\n' %
             (val_acc, self.best_val_acc)
@@ -156,11 +158,14 @@ if __name__ == '__main__':
 
     evaluator = Evaluator()
 
+    checkpointer = keras.callbacks.ModelCheckpoint(os.path.join(path_model, 'model_{epoch:03d}.h5'),
+                                   verbose=1, save_weights_only=True, period=1)
+
     model.fit(
         train_generator.forfit(),
         steps_per_epoch=len(train_generator),
         epochs=50,
-        callbacks=[evaluator]
+        callbacks=[evaluator,checkpointer]
     )
 
 else:
