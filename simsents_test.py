@@ -144,7 +144,7 @@ def crossentropy_with_rdrop(y_true, y_pred):
     y_pred1 = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
     similarities = K.dot(y_pred1, K.transpose(y_pred1))  # 相似度矩阵
     similarities = similarities - K.eye(K.shape(y_pred1)[0]) * 1e12  # 排除对角线
-    similarities = similarities * 30  # scale
+    similarities = similarities * 3  # scale
     loss1 = K.mean(K.categorical_crossentropy(
         y_true, similarities, from_logits=True
     ))
@@ -194,7 +194,7 @@ def comp_loss(y_true, y_pred):
     y_pred1 = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
     similarities = K.dot(y_pred1, K.transpose(y_pred1))  # 相似度矩阵
     similarities = similarities - K.eye(K.shape(y_pred1)[0]) * 1e12  # 排除对角线
-    similarities = similarities * 30  # scale
+    similarities = similarities * 3  # scale
     loss1 = K.mean(K.categorical_crossentropy(
         y_true, similarities, from_logits=True
     ))
@@ -206,12 +206,12 @@ def r_drop_loss(y_true, y_pred):
     # 计算第1次emb的相似性矩阵
     similarities1 = K.dot(y1, K.transpose(y1))  # 相似度矩阵
     similarities1 = similarities1 - K.eye(K.shape(y1)[0]) * 1e12  # 排除对角线
-    similarities1 = similarities1 * 30  # scale
+    similarities1 = similarities1 * 3  # scale
     p_similarities1 = K.softmax(similarities1)
     # 计算第2次emb的相似性矩阵
     similarities2 = K.dot(y2, K.transpose(y2))  # 相似度矩阵
     similarities2 = similarities2 - K.eye(K.shape(y2)[0]) * 1e12  # 排除对角线
-    similarities2 = similarities2 * 30  # scale
+    similarities2 = similarities2 * 3  # scale
     p_similarities2 = K.softmax(similarities2)
     loss2_1 = K.mean(K.categorical_crossentropy(
         p_similarities1, similarities2, from_logits=True
