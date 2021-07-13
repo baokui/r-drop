@@ -305,7 +305,8 @@ def test():
     just_show()
 if __name__ == '__main__':
 
-    train_generator = data_generator(read_corpus(), batch_size)
+    # train_generator = data_generator(read_corpus(), batch_size)
+    train_generator = data_generator(TrnData, batch_size)
     evaluator = Evaluate()
     checkpointer = keras.callbacks.ModelCheckpoint(os.path.join(path_model, 'model_{epoch:03d}.h5'),
                                    verbose=1, save_weights_only=True, period=1)
@@ -313,7 +314,7 @@ if __name__ == '__main__':
         train_generator.forfit(),
         steps_per_epoch=steps_per_epoch,
         epochs=epochs,
-        callbacks=[checkpointer,evaluator]
+        callbacks=[checkpointer]
     )
 
 else:
