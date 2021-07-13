@@ -24,6 +24,9 @@ maxlen = 32
 batch_size = 128
 steps_per_epoch = 1000
 epochs = 10000
+dropout_rate = 0.3
+dim = 312
+alpha = 4
 corpus_path = '/search/odin/guobk/data/simcse/20210621/train_simbert.json'
 
 bert_model = 'chinese_simbert_L-4_H-312_A-12'
@@ -57,6 +60,8 @@ with open(corpus_path,'r') as f:
     S = f.read().strip().split('\n')
 TrnData = [json.loads(f) for f in S]
 
+TrnData = TrnData[:int(len(TrnData)/batch_size)*batch_size]
+
 def truncate(text):
     """截断句子
     """
@@ -82,16 +87,18 @@ class data_generator(DataGenerator):
             if len(self.some_samples) > 1000:
                 self.some_samples.pop(0)
             token_ids, segment_ids = tokenizer.encode(
-                text, maxlen=maxlen * 2
+                text, maxlen=maxlen
             )
             batch_token_ids.append(token_ids)
             batch_segment_ids.append(segment_ids)
             token_ids, segment_ids = tokenizer.encode(
-                synonym, maxlen=maxlen * 2
+                synonym, maxlen=maxlen
             )
             batch_token_ids.append(token_ids)
             batch_segment_ids.append(segment_ids)
             if len(batch_token_ids) == self.batch_size or is_end:
+                batch_token_ids = batch_token_ids + batch_token_ids
+                batch_segment_ids = batch_segment_ids + batch_segment_ids
                 batch_token_ids = sequence_padding(batch_token_ids)
                 batch_segment_ids = sequence_padding(batch_segment_ids)
                 yield [batch_token_ids, batch_segment_ids], None
@@ -102,21 +109,35 @@ class TotalLoss(Loss):
     """loss分两部分，一是seq2seq的交叉熵，二是相似度的交叉熵。
     """
     def compute_loss(self, inputs, mask=None):
-        loss1 = self.compute_loss_of_seq2seq(inputs, mask)
+        loss1 = self.compute_loss_of_rdrop(inputs, mask)
         loss2 = self.compute_loss_of_similarity(inputs, mask)
-        self.add_metric(loss1, name='seq2seq_loss')
+        self.add_metric(loss1, name='rdrop_loss')
         self.add_metric(loss2, name='similarity_loss')
-        return 0.0001*loss1 + loss2
-    def compute_loss_of_seq2seq(self, inputs, mask=None):
-        y_true, y_mask, _, y_pred = inputs
-        y_true = y_true[:, 1:]  # 目标token_ids
-        y_mask = y_mask[:, 1:]  # segment_ids，刚好指示了要预测的部分
-        y_pred = y_pred[:, :-1]  # 预测序列，错开一位
-        loss = K.sparse_categorical_crossentropy(y_true, y_pred)
-        loss = K.sum(loss * y_mask) / K.sum(y_mask)
-        return loss
+        return loss1 + loss2
+    def compute_loss_of_rdrop(self, inputs, mask=None):
+        y_true, y_mask, y_pred = inputs
+        y_pred1 = K.l2_normalize(y_pred, axis=1)
+        y1 = y_pred1[:batch_size] # 第1次model predict后的emb
+        y2 = y_pred1[batch_size:] # 第1次model predict后的emb
+        # 计算第1次emb的相似性矩阵
+        similarities1 = K.dot(y1, K.transpose(y1))  # 相似度矩阵
+        similarities1 = similarities1 - K.eye(K.shape(y1)[0]) * 1e12  # 排除对角线
+        similarities1 = similarities1 * 30  # scale
+        p_similarities1 = K.softmax(similarities1)
+        # 计算第2次emb的相似性矩阵
+        similarities2 = K.dot(y2, K.transpose(y2))  # 相似度矩阵
+        similarities2 = similarities2 - K.eye(K.shape(y2)[0]) * 1e12  # 排除对角线
+        similarities2 = similarities2 * 30  # scale
+        p_similarities2 = K.softmax(similarities2)
+        loss2_1 = K.mean(K.categorical_crossentropy(
+            p_similarities1, similarities2, from_logits=True
+        ))
+        loss2_2 = K.mean(K.categorical_crossentropy(
+            p_similarities2, similarities1, from_logits=True
+        ))
+        return (loss2_1 + loss2_2)/4*alpha
     def compute_loss_of_similarity(self, inputs, mask=None):
-        _, _, y_pred, _ = inputs
+        _, _, y_pred = inputs
         y_true = self.get_labels_of_similarity(y_pred)  # 构建标签
         y_pred = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
         similarities = K.dot(y_pred, K.transpose(y_pred))  # 相似度矩阵
@@ -134,8 +155,35 @@ class TotalLoss(Loss):
         labels = K.cast(labels, K.floatx())
         return labels
 
+# bert = build_transformer_model(
+#             config_path,
+#             checkpoint_path,
+#             model='bert',
+#             with_pool='linear',
+#             dropout_rate=dropout_rate
+#         )
+# outputs, count = [], 0
+# while True:
+#     try:
+#         output = bert.get_layer(
+#             'Transformer-%d-FeedForward-Norm' % count
+#         ).output
+#         outputs.append(output)
+#         count += 1
+#     except:
+#         break
+# output = keras.layers.Lambda(lambda x: x[:, 0])(outputs[-1])
+# feature = keras.layers.Dense(dim,activation='tanh')(output)
 
-# 建立加载模型
+# outputs = TotalLoss([2])(bert.inputs + [feature])
+# model = keras.models.Model(bert.inputs, outputs)
+# encoder = keras.models.Model(bert.inputs,feature)
+
+# AdamW = extend_with_weight_decay(Adam, 'AdamW')
+# optimizer = AdamW(learning_rate=2e-6, weight_decay_rate=0.01)
+# model.compile(optimizer=optimizer)
+# model.summary()
+
 bert = build_transformer_model(
     config_path,
     checkpoint_path,
@@ -148,14 +196,13 @@ bert = build_transformer_model(
 encoder = keras.models.Model(bert.model.inputs, bert.model.outputs[0])
 seq2seq = keras.models.Model(bert.model.inputs, bert.model.outputs[1])
 
-outputs = TotalLoss([2, 3])(bert.model.inputs + bert.model.outputs)
+outputs = TotalLoss([2])(bert.model.inputs + [bert.model.outputs[0]])
 model = keras.models.Model(bert.model.inputs, outputs)
 
 AdamW = extend_with_weight_decay(Adam, 'AdamW')
 optimizer = AdamW(learning_rate=2e-6, weight_decay_rate=0.01)
 model.compile(optimizer=optimizer)
 model.summary()
-
 
 class SynonymsGenerator(AutoRegressiveDecoder):
     """seq2seq解码器
