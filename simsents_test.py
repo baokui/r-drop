@@ -1,55 +1,68 @@
-#! -*- coding:utf-8 -*-
-# 通过R-Drop增强模型的泛化性能
-# 数据集：TNEWS 短文本分类 (https://github.com/CLUEbenchmark/CLUE)
-# 博客：https://kexue.fm/archives/8496
+#! -*- coding: utf-8 -*-
+# SimBERT训练代码
+# 训练环境：tensorflow 1.14 + keras 2.3.1 + bert4keras 0.7.7
 
+from __future__ import print_function
 import json
 import numpy as np
-from bert4keras.backend import keras, search_layer, K
-from bert4keras.tokenizers import Tokenizer
+from collections import Counter
+from bert4keras.backend import keras, K
+from bert4keras.layers import Loss
 from bert4keras.models import build_transformer_model
-from bert4keras.optimizers import Adam
-from bert4keras.snippets import sequence_padding, DataGenerator
-from keras.layers import Lambda, Dense
-from keras.losses import kullback_leibler_divergence as kld
-from tqdm import tqdm
-from modules import truncate
+from bert4keras.tokenizers import Tokenizer, load_vocab
+from bert4keras.optimizers import Adam, extend_with_weight_decay
+from bert4keras.snippets import DataGenerator
+from bert4keras.snippets import sequence_padding
+from bert4keras.snippets import text_segmentate
+from bert4keras.snippets import AutoRegressiveDecoder
+from bert4keras.snippets import uniout
 import os
-maxlen = 128
-batch_size = 32
-dim = 312
-alpha = 4
+import random
+import sys
+# 基本信息
+maxlen = 32
+batch_size = 128
+steps_per_epoch = 1000
+epochs = 10000
+corpus_path = '/search/odin/guobk/data/simcse/20210621/train_simbert.json'
 
-# BERT base
-config_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/bert_config.json'
-checkpoint_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/bert_model.ckpt'
-dict_path = '/search/odin/guobk/data/model/chinese_simbert_L-4_H-312_A-12/vocab.txt'
-
-path_train = '/search/odin/guobk/data/simcse/20210621/train_d_drop.txt'
-path_dev = '/search/odin/guobk/data/simcse/20210621/dev_d_drop.txt'
+bert_model = 'chinese_simbert_L-4_H-312_A-12'
 path_model = '/search/odin/guobk/data/my_rdrop_bert4-test'
+# bert_model,path_model = sys.argv[1:]
 
-def load_data(filename):
-    D = []
-    with open(filename) as f:
-        for i, l in enumerate(f):
-            l = json.loads(l)
-            #text, syns = l['text'], l['synonyms']
-            D.append(l)
-    return D
+# bert配置
+config_path = '/search/odin/guobk/data/model/{}/bert_config.json'.format(bert_model)
+checkpoint_path = '/search/odin/guobk/data/model/{}/bert_model.ckpt'.format(bert_model)
+dict_path = '/search/odin/guobk/data/model/{}/vocab.txt'.format(bert_model)
 
 
-# 加载数据集
-train_data = load_data(path_train)
+# 加载并精简词表，建立分词器
+token_dict, keep_tokens = load_vocab(
+    dict_path=dict_path,
+    simplified=True,
+    startswith=['[PAD]', '[UNK]', '[CLS]', '[SEP]'],
+)
+tokenizer = Tokenizer(token_dict, do_lower_case=True)
 
-ii = int(len(train_data)/batch_size) * batch_size
 
-train_data = train_data[:ii]
+def read_corpus():
+    """读取语料，每行一个json
+    """
+    while True:
+        with open(corpus_path) as f:
+            for l in f:
+                yield json.loads(l)
 
-valid_data = load_data(path_dev)
+with open(corpus_path,'r') as f:
+    S = f.read().strip().split('\n')
+TrnData = [json.loads(f) for f in S]
 
-# 建立分词器
-tokenizer = Tokenizer(dict_path, do_lower_case=True)
+def truncate(text):
+    """截断句子
+    """
+    seps, strips = u'\n。！？!?；;，, ', u'；;，, '
+    return text_segmentate(text, maxlen - 2, seps, strips)[0]
+
 
 class data_generator(DataGenerator):
     """数据生成器
@@ -58,233 +71,204 @@ class data_generator(DataGenerator):
         super(data_generator, self).__init__(*args, **kwargs)
         self.some_samples = []
     def __iter__(self, random=False):
-        batch_token_ids, batch_segment_ids, batch_labels = [], [], []
+        batch_token_ids, batch_segment_ids = [], []
         for is_end, d in self.sample(random):
             text, synonyms = d['text'], d['synonyms']
             synonyms = [text] + synonyms
             np.random.shuffle(synonyms)
             text, synonym = synonyms[:2]
-            text, synonym = truncate(text,maxlen), truncate(synonym,maxlen)
+            text, synonym = truncate(text), truncate(synonym)
             self.some_samples.append(text)
             if len(self.some_samples) > 1000:
                 self.some_samples.pop(0)
-            for ii in range(1):
-                token_ids, segment_ids = tokenizer.encode(
-                    text, synonym, maxlen=maxlen * 2
-                )
-                batch_token_ids.append(token_ids)
-                batch_segment_ids.append(segment_ids)
-                batch_labels.append(0)
-                token_ids, segment_ids = tokenizer.encode(
-                    synonym, text, maxlen=maxlen * 2
-                )
-                batch_token_ids.append(token_ids)
-                batch_segment_ids.append(segment_ids)
-                batch_labels.append(0)
+            token_ids, segment_ids = tokenizer.encode(
+                text, maxlen=maxlen * 2
+            )
+            batch_token_ids.append(token_ids)
+            batch_segment_ids.append(segment_ids)
+            token_ids, segment_ids = tokenizer.encode(
+                synonym, maxlen=maxlen * 2
+            )
+            batch_token_ids.append(token_ids)
+            batch_segment_ids.append(segment_ids)
             if len(batch_token_ids) == self.batch_size or is_end:
-                batch_token_ids = batch_token_ids + batch_token_ids 
-                batch_segment_ids = batch_segment_ids + batch_segment_ids
-                batch_labels = batch_labels + batch_labels
                 batch_token_ids = sequence_padding(batch_token_ids)
                 batch_segment_ids = sequence_padding(batch_segment_ids)
-                yield [batch_token_ids, batch_segment_ids], batch_labels
-                batch_token_ids, batch_segment_ids, batch_labels = [], [], []
-# 转换数据集
-train_generator = data_generator(train_data, batch_size)
-valid_generator = data_generator(valid_data, batch_size)
+                yield [batch_token_ids, batch_segment_ids], None
+                batch_token_ids, batch_segment_ids = [], []
 
-# 加载预训练模型
+
+class TotalLoss(Loss):
+    """loss分两部分，一是seq2seq的交叉熵，二是相似度的交叉熵。
+    """
+    def compute_loss(self, inputs, mask=None):
+        loss1 = self.compute_loss_of_seq2seq(inputs, mask)
+        loss2 = self.compute_loss_of_similarity(inputs, mask)
+        self.add_metric(loss1, name='seq2seq_loss')
+        self.add_metric(loss2, name='similarity_loss')
+        return 0.0001*loss1 + loss2
+    def compute_loss_of_seq2seq(self, inputs, mask=None):
+        y_true, y_mask, _, y_pred = inputs
+        y_true = y_true[:, 1:]  # 目标token_ids
+        y_mask = y_mask[:, 1:]  # segment_ids，刚好指示了要预测的部分
+        y_pred = y_pred[:, :-1]  # 预测序列，错开一位
+        loss = K.sparse_categorical_crossentropy(y_true, y_pred)
+        loss = K.sum(loss * y_mask) / K.sum(y_mask)
+        return loss
+    def compute_loss_of_similarity(self, inputs, mask=None):
+        _, _, y_pred, _ = inputs
+        y_true = self.get_labels_of_similarity(y_pred)  # 构建标签
+        y_pred = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
+        similarities = K.dot(y_pred, K.transpose(y_pred))  # 相似度矩阵
+        similarities = similarities - K.eye(K.shape(y_pred)[0]) * 1e12  # 排除对角线
+        similarities = similarities * 30  # scale
+        loss = K.categorical_crossentropy(
+            y_true, similarities, from_logits=True
+        )
+        return loss
+    def get_labels_of_similarity(self, y_pred):
+        idxs = K.arange(0, K.shape(y_pred)[0])
+        idxs_1 = idxs[None, :]
+        idxs_2 = (idxs + 1 - idxs % 2 * 2)[:, None]
+        labels = K.equal(idxs_1, idxs_2)
+        labels = K.cast(labels, K.floatx())
+        return labels
+
+
+# 建立加载模型
 bert = build_transformer_model(
-    config_path=config_path,
-    checkpoint_path=checkpoint_path,
-    dropout_rate=0.3,
+    config_path,
+    checkpoint_path,
+    with_pool='linear',
+    application='unilm',
+    keep_tokens=keep_tokens,  # 只保留keep_tokens中的字，精简原字表
     return_keras_model=False,
 )
 
-output = Lambda(lambda x: x[:, 0])(bert.model.output)
-# output = Dense(
-#     units=dim,
-#     activation='tanh',
-#     kernel_initializer=bert.initializer
-# )(output)
-output = keras.layers.Dense(dim,activation='tanh')(output)
-model = keras.models.Model(bert.model.input, output)
+encoder = keras.models.Model(bert.model.inputs, bert.model.outputs[0])
+seq2seq = keras.models.Model(bert.model.inputs, bert.model.outputs[1])
+
+outputs = TotalLoss([2, 3])(bert.model.inputs + bert.model.outputs)
+model = keras.models.Model(bert.model.inputs, outputs)
+
+AdamW = extend_with_weight_decay(Adam, 'AdamW')
+optimizer = AdamW(learning_rate=2e-6, weight_decay_rate=0.01)
+model.compile(optimizer=optimizer)
 model.summary()
 
-def simcse_loss(y_true, y_pred):
-    """用于SimCSE训练的loss
-    """
-    # 构造标签
-    idxs = K.arange(0, K.shape(y_pred)[0]/2)
-    idxs_1 = idxs[None, :]
-    idxs_2 = idxs[:, None]
-    y_true = K.equal(idxs_1, idxs_2)
-    y_true = K.cast(y_true, K.floatx())
-    # 计算相似度
-    outputA = Lambda(lambda x: x[:,:dim])(y_pred)
-    outputB = Lambda(lambda x: x[:,dim:])(y_pred)
-    outputA = outputA[::2] #取偶数行，即取A句的featureA
-    outputB = outputB[1::2] #取奇数行，即取B句的featureB
-    outputA = K.l2_normalize(outputA, axis=1)
-    outputB = K.l2_normalize(outputB, axis=1)
-    similarities = K.dot(outputA, K.transpose(outputB))
-    similarities = similarities * 2
-    loss = K.categorical_crossentropy(y_true, similarities, from_logits=True)
-    return K.mean(loss)
-def crossentropy_with_rdrop(y_true, y_pred):
-    """配合R-Drop的交叉熵损失
-    https://spaces.ac.cn/archives/8496
-    """
-    # 相似性loss
-    idxs = K.arange(0, K.shape(y_pred)[0])
-    idxs_1 = idxs[None, :]
-    idxs_2 = (idxs + 1 - idxs % 2 * 2)[:, None]
-    labels = K.equal(idxs_1, idxs_2)
-    y_true = K.cast(labels, K.floatx())
-    y_pred1 = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
-    similarities = K.dot(y_pred1, K.transpose(y_pred1))  # 相似度矩阵
-    similarities = similarities - K.eye(K.shape(y_pred1)[0]) * 1e12  # 排除对角线
-    similarities = similarities * 3  # scale
-    loss1 = K.mean(K.categorical_crossentropy(
-        y_true, similarities, from_logits=True
-    ))
-    # K-L loss
-    # loss2 = kld(y_pred1[::2], y_pred1[1::2]) + kld(y_pred1[1::2], y_pred1[::2])
-    # loss2_0 = kld(y_pred1[::4], y_pred1[2::4]) + kld(y_pred1[2::4], y_pred1[::4])
-    # loss2_1 = kld(y_pred1[1::4], y_pred1[3::4]) + kld(y_pred1[3::4], y_pred1[1::4])
-    # loss2 = loss2_0 + loss2_1
-    # loss = loss1 + K.mean(loss2) / 4 * alpha
-    # MSE
-    # loss2_0 = K.mean(K.square(y_pred1[::4]-y_pred1[2::4]))
-    # loss2_1 = K.mean(K.square(y_pred1[1::4]-y_pred1[3::4]))
-    # loss2 = loss2_0 + loss2_1
-    # loss = loss1/2 + loss2*0.3
-    # 对比loss
-    y1 = y_pred1[:batch_size] # 第1次model predict后的emb
-    y2 = y_pred1[batch_size:] # 第1次model predict后的emb
-    # 计算第1次emb的相似性矩阵
-    similarities1 = K.dot(y1, K.transpose(y1))  # 相似度矩阵
-    similarities1 = similarities1 - K.eye(K.shape(y1)[0]) * 1e12  # 排除对角线
-    similarities1 = similarities1 * 3  # scale
-    p_similarities1 = K.softmax(similarities1)
-    # 计算第2次emb的相似性矩阵
-    similarities2 = K.dot(y2, K.transpose(y2))  # 相似度矩阵
-    similarities2 = similarities2 - K.eye(K.shape(y2)[0]) * 1e12  # 排除对角线
-    similarities2 = similarities2 * 3  # scale
-    p_similarities2 = K.softmax(similarities2)
-    loss2_1 = K.mean(K.categorical_crossentropy(
-        p_similarities1, similarities2, from_logits=True
-    ))
-    loss2_2 = K.mean(K.categorical_crossentropy(
-        p_similarities2, similarities1, from_logits=True
-    ))
-    loss = loss1 + (loss2_1+loss2_2)/4*alpha
-    return loss
 
-def comp_loss(y_true, y_pred):
-    """配合R-Drop的交叉熵损失
-    https://spaces.ac.cn/archives/8496
+class SynonymsGenerator(AutoRegressiveDecoder):
+    """seq2seq解码器
     """
-    # 相似性loss
-    idxs = K.arange(0, K.shape(y_pred)[0])
-    idxs_1 = idxs[None, :]
-    idxs_2 = (idxs + 1 - idxs % 2 * 2)[:, None]
-    labels = K.equal(idxs_1, idxs_2)
-    y_true = K.cast(labels, K.floatx())
-    y_pred1 = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
-    similarities = K.dot(y_pred1, K.transpose(y_pred1))  # 相似度矩阵
-    similarities = similarities - K.eye(K.shape(y_pred1)[0]) * 1e12  # 排除对角线
-    similarities = similarities * 3  # scale
-    loss1 = K.mean(K.categorical_crossentropy(
-        y_true, similarities, from_logits=True
-    ))
-    return loss1
-def r_drop_loss(y_true, y_pred):
-    y_pred1 = K.l2_normalize(y_pred, axis=1)  # 句向量归一化
-    y1 = y_pred1[:batch_size] # 第1次model predict后的emb
-    y2 = y_pred1[batch_size:] # 第1次model predict后的emb
-    # 计算第1次emb的相似性矩阵
-    similarities1 = K.dot(y1, K.transpose(y1))  # 相似度矩阵
-    similarities1 = similarities1 - K.eye(K.shape(y1)[0]) * 1e12  # 排除对角线
-    similarities1 = similarities1 * 3  # scale
-    p_similarities1 = K.softmax(similarities1)
-    # 计算第2次emb的相似性矩阵
-    similarities2 = K.dot(y2, K.transpose(y2))  # 相似度矩阵
-    similarities2 = similarities2 - K.eye(K.shape(y2)[0]) * 1e12  # 排除对角线
-    similarities2 = similarities2 * 3  # scale
-    p_similarities2 = K.softmax(similarities2)
-    loss2_1 = K.mean(K.categorical_crossentropy(
-        p_similarities1, similarities2, from_logits=True
-    ))
-    loss2_2 = K.mean(K.categorical_crossentropy(
-        p_similarities2, similarities1, from_logits=True
-    ))
-    loss2 = (loss2_1+loss2_2)/4*alpha
-    return loss2
-# loss = crossentropy_with_rdrop(None, model.output)
-model.compile(
-    loss=crossentropy_with_rdrop,
-    metrics = [crossentropy_with_rdrop, comp_loss, r_drop_loss],
-    optimizer=Adam(2e-5)
+    # @AutoRegressiveDecoder.set_rtype('probas')
+    #def predict(self, inputs, output_ids, step):
+    def predict(self, inputs, output_ids, states=0, temperature=1, probas='p'):
+        token_ids, segment_ids = inputs
+        token_ids = np.concatenate([token_ids, output_ids], 1)
+        segment_ids = np.concatenate([segment_ids, np.ones_like(output_ids)], 1)
+        return seq2seq.predict([token_ids, segment_ids])[:, -1],states
+    def generate(self, text, n=1, topk=5):
+        token_ids, segment_ids = tokenizer.encode(text, maxlen=maxlen)
+        output_ids = self.random_sample([token_ids, segment_ids], n,
+                                        topk)  # 基于随机采样
+        return [tokenizer.decode(ids) for ids in output_ids]
+
+
+synonyms_generator = SynonymsGenerator(
+    start_id=None, end_id=tokenizer._token_end_id, maxlen=maxlen
 )
 
 
-def evaluate(data):
-    total, right = 0., 0.
-    for x_true, y_true in data:
-        y_pred = model.predict(x_true).argmax(axis=1)
-        y_true = y_true[:, 0]
-        total += len(y_true)
-        right += (y_true == y_pred).sum()
-    return right / total
+def gen_synonyms(text, n=100, k=20):
+    """"含义： 产生sent的n个相似句，然后返回最相似的k个。
+    做法：用seq2seq生成，并用encoder算相似度并排序。
+    效果：
+        >>> gen_synonyms(u'微信和支付宝哪个好？')
+        [
+            u'微信和支付宝，哪个好?',
+            u'微信和支付宝哪个好',
+            u'支付宝和微信哪个好',
+            u'支付宝和微信哪个好啊',
+            u'微信和支付宝那个好用？',
+            u'微信和支付宝哪个好用',
+            u'支付宝和微信那个更好',
+            u'支付宝和微信哪个好用',
+            u'微信和支付宝用起来哪个好？',
+            u'微信和支付宝选哪个好',
+        ]
+    """
+    r = synonyms_generator.generate(text, n)
+    r = [i for i in set(r) if i != text]
+    r = [text] + r
+    X, S = [], []
+    for t in r:
+        x, s = tokenizer.encode(t)
+        X.append(x)
+        S.append(s)
+    X = sequence_padding(X)
+    S = sequence_padding(S)
+    Z = encoder.predict([X, S])
+    Z /= (Z**2).sum(axis=1, keepdims=True)**0.5
+    argsort = np.dot(Z[1:], -Z[0]).argsort()
+    return [r[i + 1] for i in argsort[:k]]
 
 
-class Evaluator(keras.callbacks.Callback):
-    """评估与保存
+def just_show():
+    """随机观察一些样本的效果
+    """
+    # some_samples = train_generator.some_samples
+    # S = [np.random.choice(some_samples) for i in range(3)]
+    S = random.sample(TrnData, k=10)
+    for s in S:
+        try:
+            print('###########################')
+            print('------------------')
+            print(u'原句子：%s' % s['text'])
+            print(u'同义句子：')
+            r = gen_synonyms(s['text'], 10, 10)
+            for rr in r:
+                print(rr)
+            print('------------------')
+            print(u'原句子：%s' % s['synonyms'][0])
+            print(u'同义句子：')
+            r = gen_synonyms(s['synonyms'][0], 10, 10)
+            for rr in r:
+                print(rr)
+        except:
+            pass
+
+
+class Evaluate(keras.callbacks.Callback):
+    """评估模型
     """
     def __init__(self):
-        self.best_val_acc = 0.
+        self.lowest = 1e10
 
     def on_epoch_end(self, epoch, logs=None):
-        val_acc = evaluate(valid_generator)
-        if val_acc > self.best_val_acc:
-            self.best_val_acc = val_acc
-            model.save_weights('best_model.weights')
-        print(
-            u'val_acc: %.5f, best_val_acc: %.5f\n' %
-            (val_acc, self.best_val_acc)
-        )
+        model.save_weights(os.path.join(path_model,'latest_model.weights'))
+        # 保存最优
+        if logs['loss'] <= self.lowest:
+            self.lowest = logs['loss']
+            model.save_weights(os.path.join(path_model,'latest_model.weights'))
+        # 演示效果
+        just_show()
 
-
-def predict_to_file(in_file, out_file):
-    """输出预测结果到文件
-    结果文件可以提交到 https://www.cluebenchmarks.com 评测。
-    """
-    fw = open(out_file, 'w')
-    with open(in_file) as fr:
-        for l in tqdm(fr):
-            l = json.loads(l)
-            text = l['sentence']
-            token_ids, segment_ids = tokenizer.encode(text, maxlen=maxlen)
-            label = model.predict([[token_ids], [segment_ids]])[0].argmax()
-            l = json.dumps({'id': str(l['id']), 'label': labels[label]})
-            fw.write(l + '\n')
-    fw.close()
-
-
+def test():
+    model.load_weights(os.path.join(path_model,'latest_model.weights'))
+    just_show()
 if __name__ == '__main__':
 
-    evaluator = Evaluator()
+    train_generator = data_generator(read_corpus(), batch_size)
+    evaluator = Evaluate()
     checkpointer = keras.callbacks.ModelCheckpoint(os.path.join(path_model, 'model_{epoch:03d}.h5'),
                                    verbose=1, save_weights_only=True, period=1)
-    model.fit(
+    model.fit_generator(
         train_generator.forfit(),
-        steps_per_epoch=len(train_generator),
-        epochs=50,
-        callbacks=[checkpointer]
+        steps_per_epoch=steps_per_epoch,
+        epochs=epochs,
+        callbacks=[checkpointer,evaluator]
     )
 
 else:
-
-    model.load_weights('best_model.weights')
-    # predict_to_file('/root/CLUE-master/baselines/CLUEdataset/tnews/test.json', 'tnews_predict.json')
+    pass
+    # model.load_weights('./latest_model.weights')
