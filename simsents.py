@@ -41,6 +41,11 @@ def load_data(filename):
 
 # 加载数据集
 train_data = load_data(path_train)
+
+ii = int(len(train_data)/batch_size) * batch_size
+
+train_data = train_data[:ii]
+
 valid_data = load_data(path_dev)
 
 # 建立分词器
